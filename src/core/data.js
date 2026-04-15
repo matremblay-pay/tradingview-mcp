@@ -132,36 +132,108 @@ export async function getIndicator({ entity_id }) {
   return { success: true, entity_id, visible: data?.visible, inputs };
 }
 
-export async function getStrategyResults() {
+export async function getStrategyResults({ strategy_filter } = {}) {
+  const filter = strategy_filter ? JSON.stringify(String(strategy_filter).toLowerCase()) : 'null';
   const results = await evaluate(`
     (function() {
       try {
         var chart = ${CHART_API}._chartWidget;
         var sources = chart.model().model().dataSources();
-        var strat = null;
+        var filter = ${filter};
+        var strats = [];
         for (var i = 0; i < sources.length; i++) {
           var s = sources[i];
-          if (s.metaInfo && s.metaInfo().is_price_study === false && (s.reportData || s.performance)) { strat = s; break; }
-        }
-        if (!strat) return {metrics: {}, source: 'internal_api', error: 'No strategy found on chart. Add a strategy indicator first.'};
-        var metrics = {};
-        if (strat.reportData) {
-          var rd = typeof strat.reportData === 'function' ? strat.reportData() : strat.reportData;
-          if (rd && typeof rd === 'object') {
-            if (typeof rd.value === 'function') rd = rd.value();
-            if (rd) { var keys = Object.keys(rd); for (var k = 0; k < keys.length; k++) { var val = rd[keys[k]]; if (val !== null && val !== undefined && typeof val !== 'function') metrics[keys[k]] = val; } }
+          if (typeof s.reportData === 'function') {
+            var name = '';
+            try { name = (s.metaInfo().description || s.metaInfo().id || ''); } catch(e) {}
+            strats.push({ s: s, name: name });
           }
         }
-        if (Object.keys(metrics).length === 0 && strat.performance) {
-          var perf = strat.performance();
-          if (perf && typeof perf.value === 'function') perf = perf.value();
-          if (perf && typeof perf === 'object') { var pkeys = Object.keys(perf); for (var p = 0; p < pkeys.length; p++) { var pval = perf[pkeys[p]]; if (pval !== null && pval !== undefined && typeof pval !== 'function') metrics[pkeys[p]] = pval; } }
+        if (strats.length === 0) {
+          return { metrics: {}, source: 'internal_api', error: 'No strategy found on chart. Add a strategy script first.' };
         }
-        return {metrics: metrics, source: 'internal_api'};
-      } catch(e) { return {metrics: {}, source: 'internal_api', error: e.message}; }
+        var picked = null;
+        if (filter) {
+          for (var j = 0; j < strats.length; j++) {
+            if (strats[j].name.toLowerCase().indexOf(filter) !== -1) { picked = strats[j]; break; }
+          }
+          if (!picked) {
+            return { metrics: {}, source: 'internal_api', error: 'No strategy matched filter "' + filter + '". Available: ' + strats.map(function(x){return x.name;}).join(' | ') };
+          }
+        } else {
+          picked = strats[0];
+        }
+        var rd = picked.s.reportData();
+        if (rd && typeof rd.value === 'function') rd = rd.value();
+        if (!rd || typeof rd !== 'object') {
+          return { metrics: {}, source: 'internal_api', error: 'reportData() returned non-object' };
+        }
+        var perf = rd.performance || {};
+        var metrics = {};
+        // Flatten nested performance object to dot-path keys (e.g. all.netProfit).
+        (function walk(obj, prefix, depth) {
+          if (depth > 3 || obj === null || obj === undefined) return;
+          if (typeof obj !== 'object') { metrics[prefix] = obj; return; }
+          var ks = Object.keys(obj);
+          for (var a = 0; a < ks.length; a++) {
+            var v = obj[ks[a]];
+            var p = prefix ? prefix + '.' + ks[a] : ks[a];
+            if (v === null || v === undefined) continue;
+            if (typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean') metrics[p] = v;
+            else if (typeof v === 'object' && !Array.isArray(v)) walk(v, p, depth + 1);
+          }
+        })(perf, '', 0);
+        // Top-level conveniences (shortcut names commonly needed)
+        if (perf.all) {
+          if (perf.all.netProfit !== undefined) metrics.netProfit = perf.all.netProfit;
+          if (perf.all.profitFactor !== undefined) metrics.profitFactor = perf.all.profitFactor;
+          if (perf.all.totalTrades !== undefined) metrics.totalTrades = perf.all.totalTrades;
+          if (perf.all.percentProfitable !== undefined) metrics.percentProfitable = perf.all.percentProfitable;
+          if (perf.all.avgTrade !== undefined) metrics.avgTrade = perf.all.avgTrade;
+          if (perf.all.grossProfit !== undefined) metrics.grossProfit = perf.all.grossProfit;
+          if (perf.all.grossLoss !== undefined) metrics.grossLoss = perf.all.grossLoss;
+          if (perf.all.commissionPaid !== undefined) metrics.commissionPaid = perf.all.commissionPaid;
+          if (perf.all.largestWinTrade !== undefined) metrics.largestWinTrade = perf.all.largestWinTrade;
+          if (perf.all.largestLosTrade !== undefined) metrics.largestLosTrade = perf.all.largestLosTrade;
+        }
+        if (perf.maxStrategyDrawDown !== undefined) metrics.maxDrawDown = perf.maxStrategyDrawDown;
+        if (perf.maxStrategyDrawDownPercent !== undefined) metrics.maxDrawDownPercent = perf.maxStrategyDrawDownPercent;
+        if (perf.sharpeRatio !== undefined) metrics.sharpeRatio = perf.sharpeRatio;
+        if (perf.sortinoRatio !== undefined) metrics.sortinoRatio = perf.sortinoRatio;
+        var out = {
+          strategy_name: picked.name,
+          available_strategies: strats.map(function(x){return x.name;}),
+          currency: rd.currency,
+          metrics: metrics,
+          source: 'internal_api'
+        };
+        if (rd.settings && rd.settings.dateRange) {
+          out.date_range = {
+            backtest_from: rd.settings.dateRange.backtest && rd.settings.dateRange.backtest.from,
+            backtest_to: rd.settings.dateRange.backtest && rd.settings.dateRange.backtest.to,
+            trade_from: rd.settings.dateRange.trade && rd.settings.dateRange.trade.from,
+            trade_to: rd.settings.dateRange.trade && rd.settings.dateRange.trade.to
+          };
+        }
+        out.trade_count = (rd.trades && rd.trades.length) || 0;
+        out.filled_order_count = (rd.filledOrders && rd.filledOrders.length) || 0;
+        return out;
+      } catch(e) { return { metrics: {}, source: 'internal_api', error: e.message, stack: (e.stack || '').substring(0, 400) }; }
     })()
   `);
-  return { success: true, metric_count: Object.keys(results?.metrics || {}).length, source: results?.source, metrics: results?.metrics || {}, error: results?.error };
+  return {
+    success: !results?.error,
+    strategy_name: results?.strategy_name,
+    available_strategies: results?.available_strategies,
+    currency: results?.currency,
+    metric_count: Object.keys(results?.metrics || {}).length,
+    source: results?.source,
+    metrics: results?.metrics || {},
+    date_range: results?.date_range,
+    trade_count: results?.trade_count,
+    filled_order_count: results?.filled_order_count,
+    error: results?.error
+  };
 }
 
 export async function getTrades({ max_trades } = {}) {
@@ -174,7 +246,7 @@ export async function getTrades({ max_trades } = {}) {
         var strat = null;
         for (var i = 0; i < sources.length; i++) {
           var s = sources[i];
-          if (s.metaInfo && s.metaInfo().is_price_study === false && (s.ordersData || s.reportData)) { strat = s; break; }
+          if (typeof s.reportData === 'function' && (s.ordersData || s.reportData)) { strat = s; break; }
         }
         if (!strat) return {trades: [], source: 'internal_api', error: 'No strategy found on chart.'};
         var orders = null;
@@ -210,7 +282,7 @@ export async function getEquity() {
         var strat = null;
         for (var i = 0; i < sources.length; i++) {
           var s = sources[i];
-          if (s.metaInfo && s.metaInfo().is_price_study === false && (s.reportData || s.performance)) { strat = s; break; }
+          if (typeof s.reportData === 'function') { strat = s; break; }
         }
         if (!strat) return {data: [], source: 'internal_api', error: 'No strategy found on chart.'};
         var data = [];

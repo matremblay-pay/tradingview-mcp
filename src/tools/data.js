@@ -18,8 +18,10 @@ export function registerDataTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('data_get_strategy_results', 'Get strategy performance metrics from Strategy Tester', {}, async () => {
-    try { return jsonResult(await core.getStrategyResults()); }
+  server.tool('data_get_strategy_results', 'Get strategy performance metrics from Strategy Tester. If multiple strategies are loaded, use strategy_filter to pick by name substring.', {
+    strategy_filter: z.string().optional().describe('Substring of strategy name to target (case-insensitive). Omit for first strategy.'),
+  }, async ({ strategy_filter }) => {
+    try { return jsonResult(await core.getStrategyResults({ strategy_filter })); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 

@@ -3,7 +3,7 @@ REM Launch TradingView Desktop on Windows with Chrome DevTools Protocol enabled
 REM Usage: scripts\launch_tv_debug.bat [port]
 
 set PORT=%1
-if "%PORT%"=="" set PORT=9222
+if "%PORT%"=="" set PORT=19222
 
 REM Kill existing TradingView instances
 taskkill /F /IM TradingView.exe >nul 2>&1
@@ -35,8 +35,8 @@ if "%TV_EXE%"=="" (
 )
 
 echo Found TradingView at: %TV_EXE%
-echo Starting with --remote-debugging-port=%PORT%...
-start "" "%TV_EXE%" --remote-debugging-port=%PORT%
+echo Starting with --remote-debugging-port=%PORT% --remote-debugging-address=0.0.0.0...
+start "" "%TV_EXE%" --remote-debugging-port=%PORT% --remote-debugging-address=0.0.0.0
 
 echo Waiting for CDP to become available...
 timeout /t 5 /nobreak >nul
