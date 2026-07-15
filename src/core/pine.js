@@ -26,7 +26,18 @@ const FIND_MONACO = `
         var env = current.memoizedProps.value.monacoEnv;
         if (env.editor && typeof env.editor.getEditors === 'function') {
           var editors = env.editor.getEditors();
-          if (editors.length > 0) return { editor: editors[0], env: env };
+          if (editors.length > 0) {
+            // Prefer the VISIBLE editor widget: stale hidden editors (e.g. from a study
+            // source-view dialog) linger in getEditors() and [0] can be one of them —
+            // writing there while "Add to chart" compiles the visible buffer pushes a
+            // stale script (2026-07-15 doc-pine incident).
+            var vis = null;
+            for (var ei = 0; ei < editors.length; ei++) {
+              var nd = editors[ei].getDomNode && editors[ei].getDomNode();
+              if (nd && nd.offsetParent !== null && nd.offsetWidth > 50) { vis = editors[ei]; break; }
+            }
+            return { editor: vis || editors[0], env: env };
+          }
         }
       }
       current = current.return;
